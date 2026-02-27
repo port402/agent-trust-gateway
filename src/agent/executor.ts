@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import type { Message } from "@a2a-js/sdk";
+import type { Task, TaskStatusUpdateEvent } from "@a2a-js/sdk";
 import type {
   AgentExecutor,
   RequestContext,
@@ -38,17 +38,32 @@ export class TrustGatewayExecutor implements AgentExecutor {
     const textPart = userMessage?.parts?.find((p: { kind: string }) => p.kind === "text");
     const userText = textPart && "text" in textPart ? (textPart as { text: string }).text : "";
 
-    let responseText = "";
+    const taskId = requestContext.taskId ?? uuidv4();
+    const contextId = requestContext.contextId ?? uuidv4();
+
+    const publishResult = (state: "completed" | "failed", text: string): void => {
+      const statusMessage = {
+        kind: "message" as const,
+        messageId: uuidv4(),
+        role: "agent" as const,
+        parts: [{ kind: "text" as const, text }],
+      };
+      const status = { state, message: statusMessage };
+      eventBus.publish({ kind: "task", id: taskId, contextId, status } satisfies Task);
+      eventBus.publish({ kind: "status-update", taskId, contextId, final: true, status } satisfies TaskStatusUpdateEvent);
+    };
 
     try {
+      let responseText = "";
+
       // Parse intent from message
       const agentIdMatch = userText.match(/agent\s*(?:#?\s*)?(\d+)/i);
-      
+
       if (!agentIdMatch) {
         responseText = "Please specify an agent ID. Example: 'Get trust score for agent 42' or 'Validate agent #100'";
       } else {
         const agentId = BigInt(agentIdMatch[1]);
-        
+
         if (userText.toLowerCase().includes("profile") || userText.toLowerCase().includes("identity") || userText.toLowerCase().includes("details")) {
           responseText = await this.getProfile(agentId);
         } else if (userText.toLowerCase().includes("score") || userText.toLowerCase().includes("trust") || userText.toLowerCase().includes("reputation")) {
@@ -60,19 +75,13 @@ export class TrustGatewayExecutor implements AgentExecutor {
           responseText = await this.getProfile(agentId);
         }
       }
+
+      publishResult("completed", responseText);
     } catch (error) {
-      responseText = `Error: ${error instanceof Error ? error.message : "Unknown error occurred"}`;
+      const errorText = `Error: ${error instanceof Error ? error.message : "Unknown error occurred"}`;
+      publishResult("failed", errorText);
     }
 
-    const response: Message = {
-      kind: "message",
-      messageId: uuidv4(),
-      role: "agent",
-      parts: [{ kind: "text", text: responseText }],
-      contextId: requestContext.contextId,
-    };
-
-    eventBus.publish(response);
     eventBus.finished();
   }
 
@@ -98,11 +107,27 @@ export class TrustGatewayExecutor implements AgentExecutor {
 **Supported Trust:** ${registration.supportedTrust?.join(", ") || "None specified"}`;
   }
 
+  private async readFeedbackSafe(
+    agentId: bigint,
+  ): Promise<{ scores: number[]; warning?: string }> {
+    try {
+      const feedback = await this.reputationClient.readAllFeedback(agentId);
+      return {
+        scores: Array.isArray(feedback.scores) ? feedback.scores : [],
+      };
+    } catch (error) {
+      const warning = error instanceof Error ? error.message : "Failed to read feedback";
+      return { scores: [], warning };
+    }
+  }
+
   private async getTrustScore(agentId: bigint): Promise<string> {
     const registration = await this.identityClient.getRegistrationFile(agentId);
-    const summary = await this.reputationClient.getSummary(agentId);
-    const feedbackCount = Number(summary.count);
-    const avgScore = summary.averageScore;
+    const { scores, warning } = await this.readFeedbackSafe(agentId);
+    const feedbackCount = scores.length;
+    const avgScore = feedbackCount > 0
+      ? scores.reduce((a, b) => a + b, 0) / feedbackCount
+      : 0;
 
     // Compute trust score
     const hasEndpoints = (registration.endpoints?.length || 0) > 0;
@@ -132,7 +157,7 @@ export class TrustGatewayExecutor implements AgentExecutor {
 
 **Feedback Summary:**
 - Total Feedback: ${feedbackCount}
-- Average Score: ${Math.round(avgScore * 10) / 10}`;
+- Average Score: ${Math.round(avgScore * 10) / 10}${warning ? `\n\n**Warning:** ${warning}` : ""}`;
   }
 
   private async validateAgent(agentId: bigint): Promise<string> {

@@ -43,6 +43,13 @@ async function resolvePrivateKey(): Promise<string> {
 }
 
 export async function loadConfig(): Promise<Config> {
+  const bypassPayments = process.env.BYPASS_PAYMENTS === "true";
+  const isProd = process.env.NODE_ENV === "production";
+
+  if (bypassPayments && isProd) {
+    throw new Error("BYPASS_PAYMENTS=true is not allowed in production");
+  }
+
   return {
     walletAddress: required("WALLET_ADDRESS"),
     privateKey: await resolvePrivateKey(),
@@ -58,6 +65,6 @@ export async function loadConfig(): Promise<Config> {
     agentProviderUrl: process.env.AGENT_PROVIDER_URL,
     agentDocsUrl: process.env.AGENT_DOCS_URL,
     agentIconUrl: process.env.AGENT_ICON_URL,
-    bypassPayments: process.env.BYPASS_PAYMENTS === "true",
+    bypassPayments,
   };
 }

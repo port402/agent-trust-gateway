@@ -75,9 +75,58 @@ class RegistrationFileError extends Error {
   }
 }
 
+// Timeout for each IPFS/HTTP gateway fetch attempt (ms)
+const METADATA_FETCH_TIMEOUT = 8_000;
+
+// In-memory cache for registration file metadata.
+// Keyed by "chain:agentId". Avoids repeated IPFS/HTTP fetches for the same agent.
+const registrationCache = new Map<string, { data: RegistrationFile; expiresAt: number }>();
+const CACHE_TTL_SUCCESS = 10 * 60_000; // 10 minutes for successful fetches
+const CACHE_TTL_ERROR = 60_000; // 1 minute for errors (retry sooner)
+
+// Sentinel stored in cache to remember recent failures (avoids re-fetching broken URIs)
+const errorCache = new Map<string, { error: RegistrationFileError; expiresAt: number }>();
+
 // Helper to fetch registration file (handles data: URIs)
-async function fetchRegistrationFile(identity: IdentityClient, agentId: bigint): Promise<RegistrationFile> {
-  const tokenUri = await identity.getTokenURI(agentId);
+async function fetchRegistrationFile(identity: IdentityClient, agentId: bigint, chainName: string = DEFAULT_CHAIN): Promise<RegistrationFile> {
+  const cacheKey = `${chainName}:${agentId}`;
+
+  // Check success cache
+  const cached = registrationCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.data;
+  }
+
+  // Check error cache
+  const cachedError = errorCache.get(cacheKey);
+  if (cachedError && Date.now() < cachedError.expiresAt) {
+    throw cachedError.error;
+  }
+
+  try {
+    const result = await fetchRegistrationFileUncached(identity, agentId);
+    registrationCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_SUCCESS });
+    errorCache.delete(cacheKey);
+    return result;
+  } catch (err) {
+    if (err instanceof RegistrationFileError) {
+      errorCache.set(cacheKey, { error: err, expiresAt: Date.now() + CACHE_TTL_ERROR });
+    }
+    throw err;
+  }
+}
+
+async function fetchRegistrationFileUncached(identity: IdentityClient, agentId: bigint): Promise<RegistrationFile> {
+  let tokenUri: string;
+  try {
+    tokenUri = await identity.getTokenURI(agentId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "";
+    if (msg.includes("ERC721NonexistentToken")) {
+      throw new RegistrationFileError("Agent not found (token does not exist)", 404);
+    }
+    throw err;
+  }
 
   // Handle data: URI
   const dataUriResult = parseDataUri(tokenUri);
@@ -98,45 +147,73 @@ async function fetchRegistrationFile(identity: IdentityClient, agentId: bigint):
     fetchUrls.push(tokenUri);
   }
 
-  let lastStatus = 500;
-  for (const fetchUrl of fetchUrls) {
-    const response = await fetch(fetchUrl).catch(() => null);
-    if (!response) {
-      lastStatus = 502;
-      continue;
-    }
+  // Race all gateways concurrently — first success wins.
+  // For single-URL (HTTPS), this is just a single fetch with timeout.
+  const fetchWithTimeout = (url: string): Promise<RegistrationFile> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), METADATA_FETCH_TIMEOUT);
+    return fetch(url, { signal: controller.signal })
+      .then((response) => {
+        clearTimeout(timer);
+        if (!response.ok) throw new RegistrationFileError(`HTTP ${response.status}`, response.status);
+        return response.json() as Promise<RegistrationFile>;
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        if (err instanceof RegistrationFileError) throw err;
+        if (err instanceof Error && err.name === "AbortError") {
+          throw new RegistrationFileError(`Metadata fetch timed out (${METADATA_FETCH_TIMEOUT}ms)`, 504);
+        }
+        throw new RegistrationFileError("Upstream gateway unreachable", 502);
+      });
+  };
 
-    if (response.ok) {
-      return response.json() as Promise<RegistrationFile>;
+  try {
+    // Promise.any resolves with the first successful result.
+    // If all reject, it throws AggregateError with all rejection reasons.
+    return await Promise.any(fetchUrls.map(fetchWithTimeout));
+  } catch (aggErr) {
+    // All gateways failed — pick the most informative error
+    if (aggErr instanceof AggregateError) {
+      const errors = aggErr.errors as RegistrationFileError[];
+      // Prefer 504 (timeout) over 502 (unreachable) over others for status
+      const has504 = errors.some((e) => e.status === 504);
+      const has404 = errors.some((e) => e.status === 404);
+      if (has404) throw new RegistrationFileError("Registration metadata not found", 404);
+      if (has504) throw new RegistrationFileError(`Metadata fetch timed out (${METADATA_FETCH_TIMEOUT}ms)`, 504);
+      throw errors[0];
     }
-
-    lastStatus = response.status;
-    // For 404 on IPFS gateway, continue trying fallback gateways.
-    if (response.status === 404) continue;
+    throw aggErr;
   }
-
-  throw new RegistrationFileError(`Failed to fetch registration file: ${lastStatus}`, lastStatus);
 }
 
-// Helper to create clients
+// Reuse a single client per chain to avoid creating new connections on every request.
+const clientCache = new Map<string, { identity: IdentityClient; reputation: ReputationClient; chainId: number }>();
+
 function createClients(chainName: string = DEFAULT_CHAIN) {
+  const cached = clientCache.get(chainName);
+  if (cached) return cached;
+
   const config = CHAINS[chainName] || CHAINS[DEFAULT_CHAIN];
-  
-  const transports = config.rpcs.filter(Boolean).map((rpc) => http(rpc, { retryCount: 2 }));
+
+  const transports = config.rpcs.filter(Boolean).map((rpc) => http(rpc, { retryCount: 1, timeout: 8_000 }));
 
   const publicClient = createPublicClient({
     chain: config.chain,
     transport: transports.length > 1 ? fallback(transports) : transports[0],
   });
-  
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const adapter = new ViemAdapter(publicClient as any);
-  
-  return {
+
+  const clients = {
     identity: new IdentityClient(adapter, config.identityRegistry),
     reputation: new ReputationClient(adapter, config.reputationRegistry, config.identityRegistry),
     chainId: config.chain.id,
   };
+
+  clientCache.set(chainName, clients);
+  return clients;
 }
 
 // Input schemas
@@ -176,25 +253,22 @@ function badRequest(c: { json: (body: unknown, status?: number) => Response }, e
   return c.json(errorBody(error, details), 400);
 }
 
-function notFound(c: { json: (body: unknown, status?: number) => Response }, error: string, details?: unknown) {
-  return c.json(errorBody(error, details), 404);
-}
-
-function internalError(c: { json: (body: unknown, status?: number) => Response }, error: string, details?: unknown) {
-  return c.json(errorBody(error, details), 500);
-}
-
 function endpointError(
   c: { json: (body: unknown, status?: number) => Response },
   errorMessage: string,
   error: unknown,
 ) {
-  if (error instanceof RegistrationFileError && error.status === 404) {
-    return notFound(c, errorMessage, "Agent registration metadata not found (token URI unresolved)");
+  if (error instanceof RegistrationFileError) {
+    const detail = error.status === 404
+      ? "Agent registration metadata not found (token URI unresolved)"
+      : error.message;
+    // Normalize non-standard upstream statuses (e.g. Cloudflare 530) to 502
+    const status = error.status >= 400 && error.status <= 511 ? error.status : 502;
+    return c.json(errorBody(errorMessage, detail), status);
   }
 
   const message = error instanceof Error ? error.message : "Unknown error";
-  return internalError(c, errorMessage, message);
+  return c.json(errorBody(errorMessage, message), 500);
 }
 
 function parseAgentIdParam(agentIdParam: string) {
@@ -234,7 +308,7 @@ api.get("/agent/:id/profile", async (c) => {
     const { identity } = createClients(chain);
     
     // Get registration file (with data: URI support)
-    const registrationFile = await fetchRegistrationFile(identity, agentId);
+    const registrationFile = await fetchRegistrationFile(identity, agentId, chain);
     
     // Get owner
     const owner = await identity.getOwner(agentId);
@@ -288,7 +362,7 @@ api.post("/agent/profile/invoke", async (c) => {
   
   try {
     const { identity } = createClients(chain);
-    const registrationFile = await fetchRegistrationFile(identity, agentId);
+    const registrationFile = await fetchRegistrationFile(identity, agentId, chain);
     const owner = await identity.getOwner(agentId);
     
     let wallet: string | null = null;
@@ -341,7 +415,7 @@ api.post("/agent/score/invoke", async (c) => {
     const { identity, reputation } = createClients(chain);
     
     // Get basic profile info
-    const registrationFile = await fetchRegistrationFile(identity, agentId);
+    const registrationFile = await fetchRegistrationFile(identity, agentId, chain);
 
     // Get all feedback and compute summary locally.
     // Some registry deployments revert on getSummary when clientAddresses is empty.
@@ -428,7 +502,7 @@ api.post("/agent/validate/invoke", async (c) => {
     const { identity, reputation } = createClients(chain);
     
     // Get profile
-    const registrationFile = await fetchRegistrationFile(identity, agentId);
+    const registrationFile = await fetchRegistrationFile(identity, agentId, chain);
     const owner = await identity.getOwner(agentId);
     
     const validationReport: {

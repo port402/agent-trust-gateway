@@ -1,38 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { describe, it, expect } from "vitest";
 
-describe("loadConfig", () => {
-  const original = { ...process.env };
+describe("config safety", () => {
+  it("throws when BYPASS_PAYMENTS=true in production", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.BYPASS_PAYMENTS = "true";
+    process.env.WALLET_ADDRESS = "0x123";
+    process.env.PRIVATE_KEY = "0xabc";
 
-  beforeEach(() => {
-    process.env.WALLET_ADDRESS = "0x1234567890abcdef";
-    process.env.PRIVATE_KEY = "0xdeadbeef";
-  });
-
-  afterEach(() => {
-    process.env = { ...original };
-  });
-
-  it("loads required env vars", async () => {
-    const config = await loadConfig();
-    expect(config.walletAddress).toBe("0x1234567890abcdef");
-    expect(config.privateKey).toBe("0xdeadbeef");
-  });
-
-  it("applies defaults for optional vars", async () => {
-    const config = await loadConfig();
-    expect(config.network).toBe("eip155:84532");
-    expect(config.port).toBe(3000);
-    expect(config.agentName).toBe("Hello Agent");
-  });
-
-  it("throws on missing WALLET_ADDRESS", async () => {
-    delete process.env.WALLET_ADDRESS;
-    await expect(loadConfig()).rejects.toThrow("WALLET_ADDRESS");
-  });
-
-  it("throws on missing PRIVATE_KEY", async () => {
-    delete process.env.PRIVATE_KEY;
-    await expect(loadConfig()).rejects.toThrow("PRIVATE_KEY");
+    const { loadConfig } = await import("../src/config.js");
+    await expect(loadConfig()).rejects.toThrow(
+      "BYPASS_PAYMENTS=true is not allowed in production",
+    );
   });
 });

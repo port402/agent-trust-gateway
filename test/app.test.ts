@@ -12,6 +12,7 @@ const testConfig: Config = {
   agentDescription: "A test agent",
   agentUrl: "http://localhost:3000",
   port: 3000,
+  bypassPayments: false,
 };
 
 describe("Hono app routes", () => {
@@ -33,14 +34,16 @@ describe("Hono app routes", () => {
     expect(card.url).toContain("/a2a");
     expect(card.entrypoints).toBeDefined();
     expect(Object.keys(card.entrypoints)).toEqual(["profile", "score", "validate"]);
-    expect(card.entrypoints.profile.url).toBe("http://localhost:3000/agent/profile/invoke");
+    expect(card.entrypoints.profile.url).toBe("http://localhost:3000/api/agent/profile/invoke");
+    expect(card.entrypoints.score.url).toBe("http://localhost:3000/api/agent/score/invoke");
+    expect(card.entrypoints.validate.url).toBe("http://localhost:3000/api/agent/validate/invoke");
     expect(card.entrypoints.profile.method).toBe("POST");
     expect(card.entrypoints.score.pricing).toEqual({ invoke: "0.01" });
     expect(card.entrypoints.validate.input_schema.properties.checks).toBeDefined();
   });
 
-  it("GET /api/hello without payment returns 402", async () => {
-    const res = await app.request("/api/hello");
+  it("GET /api/agent/:id/profile without payment returns 402", async () => {
+    const res = await app.request("/api/agent/1/profile");
     expect(res.status).toBe(402);
   });
 
@@ -77,5 +80,46 @@ describe("Hono app routes", () => {
       }),
     });
     expect(res.status).not.toBe(402);
+  });
+
+  it("POST /a2a malformed JSON returns JSON-RPC parse error (not 500)", async () => {
+    const res = await app.request("/a2a", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{bad json",
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32700);
+  });
+
+  it("POST /a2a text/plain body returns JSON-RPC parse error (not 500)", async () => {
+    const res = await app.request("/a2a", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: "hello",
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32700);
+  });
+
+  it("POST /a2a with unsupported content-type returns invalid request (not 500)", async () => {
+    const res = await app.request("/a2a", {
+      method: "POST",
+      headers: { "Content-Type": "application/xml" },
+      body: "<rpc />",
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32600);
+  });
+
+  it("GET /api/agent/:id/profile with invalid id returns 400", async () => {
+    const noPayApp = createApp({ ...testConfig, bypassPayments: true });
+    const res = await noPayApp.request("/api/agent/not-a-number/profile");
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Invalid agentId");
   });
 });
