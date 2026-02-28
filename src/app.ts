@@ -91,7 +91,9 @@ export function createApp(config: Config) {
 
   app.route("/", health);
 
-  const paymentMiddleware = createPaymentMiddleware(config, PAID_ENDPOINTS);
+  const paymentMiddleware = config.bypassPayments
+    ? null
+    : createPaymentMiddleware(config, PAID_ENDPOINTS);
 
   // A2A payment middleware - only for paid methods
   app.use(
@@ -116,7 +118,7 @@ export function createApp(config: Config) {
         return;
       }
 
-      if (!config.bypassPayments && PAID_A2A_METHODS.has((body as { method: string }).method)) {
+      if (paymentMiddleware && PAID_A2A_METHODS.has((body as { method: string }).method)) {
         return paymentMiddleware(c, next);
       }
 
@@ -128,13 +130,7 @@ export function createApp(config: Config) {
   app.use(
     "/api/*",
     createMiddleware(async (c, next) => {
-      if (config.bypassPayments) {
-        await next();
-        return;
-      }
-
-      const path = c.req.path;
-      if (FREE_PATHS.has(path)) {
+      if (!paymentMiddleware || FREE_PATHS.has(c.req.path)) {
         await next();
         return;
       }

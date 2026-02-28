@@ -47,10 +47,20 @@ interface RegistrationFile {
   description: string;
   image?: string;
   endpoints?: Array<{ name: string; endpoint: string; version?: string }>;
+  services?: Array<{ name: string; endpoint: string; version?: string; a2aSkills?: string[] }>;
   registrations?: Array<{ agentId: number | null; agentRegistry: string }>;
   supportedTrust?: string[];
   active?: boolean;
   x402Support?: boolean;
+}
+
+/** Resolve endpoints from either `endpoints` or `services` (ERC-8004 registration-v1 schema). */
+function resolveEndpoints(reg: RegistrationFile): Array<{ name: string; endpoint: string; version?: string }> {
+  if (reg.endpoints?.length) return reg.endpoints;
+  if (reg.services?.length) {
+    return reg.services.map(({ name, endpoint, version }) => ({ name, endpoint, version }));
+  }
+  return [];
 }
 
 // Helper to parse data: URIs (base64 JSON)
@@ -284,6 +294,35 @@ function parseAgentIdParam(agentIdParam: string) {
   }
 }
 
+async function fetchWallet(identity: IdentityClient, agentId: bigint, owner: string): Promise<string> {
+  try {
+    return await identity.getMetadata(agentId, "agentWallet");
+  } catch {
+    return owner;
+  }
+}
+
+function buildProfileResponse(
+  agentId: bigint,
+  chain: string,
+  owner: string,
+  wallet: string,
+  registrationFile: RegistrationFile,
+) {
+  return {
+    agentId: agentId.toString(),
+    chain,
+    owner,
+    wallet,
+    name: registrationFile.name,
+    description: registrationFile.description,
+    image: registrationFile.image,
+    endpoints: resolveEndpoints(registrationFile),
+    supportedTrust: registrationFile.supportedTrust || [],
+    active: registrationFile.active ?? true,
+  };
+}
+
 const api = new Hono();
 
 // Health check
@@ -306,33 +345,12 @@ api.get("/agent/:id/profile", async (c) => {
   try {
     const agentId = parsedAgentId.value;
     const { identity } = createClients(chain);
-    
-    // Get registration file (with data: URI support)
     const registrationFile = await fetchRegistrationFile(identity, agentId, chain);
-    
-    // Get owner
     const owner = await identity.getOwner(agentId);
-    
-    // Try to get agent wallet (may fail if not set)
-    let wallet: string | null = null;
-    try {
-      wallet = await identity.getMetadata(agentId, "agentWallet");
-    } catch {
-      // Wallet not set, use owner as fallback
-      wallet = owner;
-    }
-    
+    const wallet = await fetchWallet(identity, agentId, owner);
+
     return c.json({
-      agentId: agentId.toString(),
-      chain,
-      owner,
-      wallet,
-      name: registrationFile.name,
-      description: registrationFile.description,
-      image: registrationFile.image,
-      endpoints: registrationFile.endpoints || [],
-      supportedTrust: registrationFile.supportedTrust || [],
-      active: (registrationFile as { active?: boolean }).active ?? true,
+      ...buildProfileResponse(agentId, chain, owner, wallet, registrationFile),
       registrations: registrationFile.registrations || [],
     });
   } catch (error) {
@@ -359,32 +377,15 @@ api.post("/agent/profile/invoke", async (c) => {
   }
   
   const { agentId, chain } = parsed.data;
-  
+
   try {
     const { identity } = createClients(chain);
     const registrationFile = await fetchRegistrationFile(identity, agentId, chain);
     const owner = await identity.getOwner(agentId);
-    
-    let wallet: string | null = null;
-    try {
-      wallet = await identity.getMetadata(agentId, "agentWallet");
-    } catch {
-      wallet = owner;
-    }
-    
+    const wallet = await fetchWallet(identity, agentId, owner);
+
     return c.json({
-      output: {
-        agentId: agentId.toString(),
-        chain,
-        owner,
-        wallet,
-        name: registrationFile.name,
-        description: registrationFile.description,
-        image: registrationFile.image,
-        endpoints: registrationFile.endpoints || [],
-        supportedTrust: registrationFile.supportedTrust || [],
-        active: (registrationFile as { active?: boolean }).active ?? true,
-      },
+      output: buildProfileResponse(agentId, chain, owner, wallet, registrationFile),
     });
   } catch (error) {
     return endpointError(c, "Failed to fetch agent profile", error);
@@ -428,13 +429,14 @@ api.post("/agent/score/invoke", async (c) => {
         : 0;
     
     // Identity maturity: based on registration age, metadata completeness
-    const hasEndpoints = (registrationFile.endpoints?.length || 0) > 0;
+    const endpoints = resolveEndpoints(registrationFile);
+    const hasEndpoints = endpoints.length > 0;
     const hasTrustMethods = (registrationFile.supportedTrust?.length || 0) > 0;
     const identityMaturity = (hasEndpoints ? 30 : 0) + (hasTrustMethods ? 20 : 0) + (registrationFile.description?.length > 50 ? 10 : 0);
     
     // Reputation confidence: based on feedback volume and consistency
     const volumeScore = Math.min(30, feedbackCount * 3); // Max 30 points for 10+ feedbacks
-    const consistencyScore = feedbackCount > 0 ? Math.min(20, (100 - computeVariance(allFeedback.scores)) / 5) : 0;
+    const consistencyScore = feedbackCount > 0 ? Math.min(20, (100 - computeStdDev(allFeedback.scores)) / 5) : 0;
     const reputationConfidence = volumeScore + consistencyScore;
     
     // Compute overall trust score (0-100)
@@ -520,8 +522,9 @@ api.post("/agent/validate/invoke", async (c) => {
     };
     
     // Check endpoints
-    if (checks.includes("endpoints") && registrationFile.endpoints) {
-      for (const ep of registrationFile.endpoints) {
+    const endpointsToValidate = resolveEndpoints(registrationFile);
+    if (checks.includes("endpoints") && endpointsToValidate.length > 0) {
+      for (const ep of endpointsToValidate) {
         const startTime = Date.now();
         try {
           // Probe endpoint with timeout
@@ -665,8 +668,8 @@ async function readFeedbackSafe(
   }
 }
 
-// Helper function to compute variance of scores
-function computeVariance(scores: number[]): number {
+// Helper function to compute standard deviation of scores
+function computeStdDev(scores: number[]): number {
   if (scores.length === 0) return 0;
   const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
   const squaredDiffs = scores.map((s) => Math.pow(s - mean, 2));
