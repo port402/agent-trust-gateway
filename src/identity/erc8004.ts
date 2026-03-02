@@ -69,8 +69,12 @@ async function applyAgentMetadata(
   config: Config,
   opts?: { imagePath?: string },
 ): Promise<string | undefined> {
-  await agent.setA2A(config.agentUrl);
+  await agent.setA2A(config.agentUrl + "/.well-known/agent-card.json");
   agent.setX402Support(true);
+  agent.setActive(true);
+  agent.addSkill("security_privacy/vulnerability_analysis", false);
+  agent.addSkill("evaluation_and_monitoring/model_evaluation", false);
+  agent.addDomain("technology/data_science/data_engineering", false);
 
   let imageCID: string | undefined;
   if (opts?.imagePath && config.pinataJwt) {
@@ -124,6 +128,9 @@ export async function updateAgent(
 
   const txHandle = await agent.registerIPFS();
   const { result } = await txHandle.waitMined();
+
+  // Set agent wallet on-chain (no-op if already matches)
+  await agent.setWallet(config.walletAddress);
 
   return {
     agentId: agent.agentId ?? String(agentId),

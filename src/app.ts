@@ -140,7 +140,7 @@ export function createApp(config: Config) {
 
   const agentCard = buildAgentCard(config, skills);
   const executor = new TrustGatewayExecutor();
-  app.route("/", createA2ARoutes(agentCard, executor));
+  app.route("/", createA2ARoutes(agentCard, executor, config));
   app.route("/api", api);
 
   return app;

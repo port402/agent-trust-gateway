@@ -115,6 +115,21 @@ describe("Hono app routes", () => {
     expect(body.error.code).toBe(-32600);
   });
 
+  it("GET /.well-known/agent-registration.json returns registration data when agentId configured", async () => {
+    const appWithId = createApp({ ...testConfig, agentId: 21557 });
+    const res = await appWithId.request("/.well-known/agent-registration.json");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.agentId).toBe(21557);
+    expect(body.agentRegistry).toBe("eip155:84532:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432");
+    expect(body.owner).toBe("0xtest");
+  });
+
+  it("GET /.well-known/agent-registration.json returns 404 when agentId not configured", async () => {
+    const res = await app.request("/.well-known/agent-registration.json");
+    expect(res.status).toBe(404);
+  });
+
   it("GET /api/agent/:id/profile with invalid id returns 400", async () => {
     const noPayApp = createApp({ ...testConfig, bypassPayments: true });
     const res = await noPayApp.request("/api/agent/not-a-number/profile");

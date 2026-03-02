@@ -15,6 +15,7 @@ export interface Config {
   agentProviderUrl?: string;
   agentDocsUrl?: string;
   agentIconUrl?: string;
+  agentId?: number;
   bypassPayments: boolean;
 }
 
@@ -65,6 +66,7 @@ export async function loadConfig(): Promise<Config> {
     agentProviderUrl: process.env.AGENT_PROVIDER_URL,
     agentDocsUrl: process.env.AGENT_DOCS_URL,
     agentIconUrl: process.env.AGENT_ICON_URL,
+    agentId: process.env.AGENT_ID ? parseInt(process.env.AGENT_ID, 10) : undefined,
     bypassPayments,
   };
 }

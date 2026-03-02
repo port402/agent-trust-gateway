@@ -42,7 +42,13 @@ async function parseJsonRpcRequest(c: { req: { header: (name: string) => string 
   }
 }
 
-export function createA2ARoutes(agentCard: AgentCard, executor: AgentExecutor) {
+export interface A2ARoutesConfig {
+  agentId?: number;
+  network: string;
+  walletAddress: string;
+}
+
+export function createA2ARoutes(agentCard: AgentCard, executor: AgentExecutor, config: A2ARoutesConfig) {
   const taskStore = new InMemoryTaskStore();
   const requestHandler = new DefaultRequestHandler(
     agentCard,
@@ -59,6 +65,19 @@ export function createA2ARoutes(agentCard: AgentCard, executor: AgentExecutor) {
     const baseUrl = card.url.replace(/\/a2a\/?$/, "");
     const entrypoints = buildEntrypoints(baseUrl);
     return c.json({ ...card, entrypoints });
+  });
+
+  // Agent registration discovery — links on-chain identity to this endpoint
+  a2a.get("/.well-known/agent-registration.json", (c) => {
+    if (config.agentId == null) {
+      return c.json({ error: "Agent ID not configured" }, 404);
+    }
+    const chainId = config.network.split(":")[1];
+    return c.json({
+      agentId: config.agentId,
+      agentRegistry: `eip155:${chainId}:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`,
+      owner: config.walletAddress,
+    });
   });
 
   // A2A JSON-RPC endpoint
