@@ -72,9 +72,11 @@ async function applyAgentMetadata(
   await agent.setA2A(config.agentUrl + "/.well-known/agent-card.json");
   agent.setX402Support(true);
   agent.setActive(true);
-  agent.addSkill("security_privacy/vulnerability_analysis", false);
-  agent.addSkill("evaluation_and_monitoring/model_evaluation", false);
-  agent.addDomain("technology/data_science/data_engineering", false);
+  agent.addSkill("security_privacy/threat_detection", true);
+  agent.addSkill("data_engineering/data_quality_assessment", true);
+  agent.addSkill("governance_compliance/compliance_assessment", true);
+  agent.addDomain("technology/security/identity_management", true);
+  agent.addDomain("technology/blockchain/smart_contracts", true);
 
   let imageCID: string | undefined;
   if (opts?.imagePath && config.pinataJwt) {
