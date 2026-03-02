@@ -121,7 +121,8 @@ export async function updateAgent(
   opts?: { registryAddresses?: RegistryAddresses; imagePath?: string },
 ): Promise<RegistrationResult> {
   const sdk = buildSDK(config, opts);
-  const agent = await sdk.loadAgent(String(agentId));
+  const chainId = parseChainId(config.network);
+  const agent = await sdk.loadAgent(`${chainId}:${agentId}`);
 
   agent.updateInfo(config.agentName, config.agentDescription);
   const imageCID = await applyAgentMetadata(agent, config, opts);

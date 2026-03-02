@@ -119,6 +119,7 @@ locals {
     var.agent_provider_url != "" ? { AGENT_PROVIDER_URL = var.agent_provider_url } : {},
     var.agent_docs_url != "" ? { AGENT_DOCS_URL = var.agent_docs_url } : {},
     var.agent_icon_url != "" ? { AGENT_ICON_URL = var.agent_icon_url } : {},
+    var.agent_id != 0 ? { AGENT_ID = tostring(var.agent_id) } : {},
   )
 }
 

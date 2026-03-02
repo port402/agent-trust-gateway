@@ -102,6 +102,12 @@ variable "public_agent_url" {
   default     = ""
 }
 
+variable "agent_id" {
+  description = "On-chain ERC-8004 token ID for this agent (optional, enables /.well-known/agent-registration.json)"
+  type        = number
+  default     = 0
+}
+
 variable "bypass_payments" {
   description = "Bypass x402 payment enforcement for paid endpoints (testing only)"
   type        = bool
