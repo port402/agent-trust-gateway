@@ -71,6 +71,7 @@ async function applyAgentMetadata(
 ): Promise<string | undefined> {
   await agent.setA2A(config.agentUrl + "/.well-known/agent-card.json");
   agent.setX402Support(true);
+  agent.setTrust(true, false, false);
   agent.setActive(true);
   agent.addSkill("security_privacy/threat_detection", true);
   agent.addSkill("data_engineering/data_quality_assessment", true);
