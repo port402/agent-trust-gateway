@@ -5,7 +5,6 @@ export interface Config {
   privateKey: string;
   network: string;
   rpcUrl: string;
-  facilitatorUrl: string;
   agentName: string;
   agentDescription: string;
   agentUrl: string;
@@ -16,6 +15,8 @@ export interface Config {
   agentDocsUrl?: string;
   agentIconUrl?: string;
   agentId?: number;
+  cdpApiKeyId?: string;
+  cdpApiKeySecret?: string;
   bypassPayments: boolean;
 }
 
@@ -56,7 +57,6 @@ export async function loadConfig(): Promise<Config> {
     privateKey: await resolvePrivateKey(),
     network: process.env.NETWORK ?? "eip155:84532",
     rpcUrl: process.env.RPC_URL ?? "https://sepolia.base.org",
-    facilitatorUrl: process.env.FACILITATOR_URL ?? "https://www.x402.org/facilitator",
     agentName: process.env.AGENT_NAME ?? "Hello Agent",
     agentDescription: process.env.AGENT_DESCRIPTION ?? "A simple Hello World agent",
     agentUrl: process.env.AGENT_URL ?? "https://agent-trust-gateway.port402.com",
@@ -67,6 +67,8 @@ export async function loadConfig(): Promise<Config> {
     agentDocsUrl: process.env.AGENT_DOCS_URL,
     agentIconUrl: process.env.AGENT_ICON_URL,
     agentId: process.env.AGENT_ID ? parseInt(process.env.AGENT_ID, 10) : undefined,
+    cdpApiKeyId: process.env.CDP_API_KEY_ID,
+    cdpApiKeySecret: process.env.CDP_API_KEY_SECRET,
     bypassPayments,
   };
 }

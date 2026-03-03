@@ -52,12 +52,6 @@ variable "rpc_url" {
   default     = "https://sepolia.base.org"
 }
 
-variable "facilitator_url" {
-  description = "x402 facilitator service URL for payment verification"
-  type        = string
-  default     = "https://www.x402.org/facilitator"
-}
-
 # ─── Agent Metadata ────────────────────────────────────────────────
 
 variable "agent_name" {
@@ -106,6 +100,20 @@ variable "agent_id" {
   description = "On-chain ERC-8004 token ID for this agent (optional, enables /.well-known/agent-registration.json)"
   type        = number
   default     = 0
+}
+
+variable "cdp_api_key_id" {
+  description = "Coinbase Developer Platform API key ID for x402 facilitator"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "cdp_api_key_secret" {
+  description = "Coinbase Developer Platform API key secret (PEM or Ed25519) for x402 facilitator"
+  type        = string
+  sensitive   = true
+  default     = ""
 }
 
 variable "bypass_payments" {

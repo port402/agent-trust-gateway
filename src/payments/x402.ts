@@ -2,6 +2,7 @@ import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import type { Network } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
+import { createFacilitatorConfig } from "@coinbase/x402";
 import type { Config } from "../config.js";
 
 export interface RoutePrice {
@@ -13,9 +14,13 @@ export interface RoutePrice {
 export function createPaymentMiddleware(config: Config, routes: RoutePrice[]) {
   const network = config.network as Network;
 
-  const facilitatorClient = new HTTPFacilitatorClient({
-    url: config.facilitatorUrl,
-  });
+  if (!config.cdpApiKeyId || !config.cdpApiKeySecret) {
+    throw new Error("CDP_API_KEY_ID and CDP_API_KEY_SECRET are required for x402 payments");
+  }
+
+  const facilitatorClient = new HTTPFacilitatorClient(
+    createFacilitatorConfig(config.cdpApiKeyId, config.cdpApiKeySecret),
+  );
 
   const resourceServer = new x402ResourceServer(facilitatorClient).register(
     network,

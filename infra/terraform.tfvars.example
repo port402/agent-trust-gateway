@@ -27,4 +27,3 @@ rpc_url = "https://sepolia.base.org"
 # memory_size       = 256
 # agent_name        = "Hello Agent"
 # agent_description = "A simple Hello World agent"
-# facilitator_url   = "https://www.x402.org/facilitator"

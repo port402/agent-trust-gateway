@@ -3,7 +3,7 @@ FROM node:22-slim AS builder
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm install
 
 COPY tsconfig.json ./
 COPY src/ src/

@@ -8,7 +8,6 @@ const testConfig: Config = {
   privateKey: "0xkey",
   network: "eip155:84532",
   rpcUrl: "https://sepolia.base.org",
-  facilitatorUrl: "https://x402.org/facilitator",
   agentName: "Test Agent",
   agentDescription: "A test agent",
   agentUrl: "http://localhost:3000",

@@ -109,7 +109,6 @@ locals {
       PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.private_key.arn
       NETWORK                = var.network
       RPC_URL                = var.rpc_url
-      FACILITATOR_URL        = var.facilitator_url
       AGENT_NAME             = var.agent_name
       AGENT_DESCRIPTION      = var.agent_description
       AGENT_URL              = local.resolved_agent_url
@@ -120,6 +119,8 @@ locals {
     var.agent_docs_url != "" ? { AGENT_DOCS_URL = var.agent_docs_url } : {},
     var.agent_icon_url != "" ? { AGENT_ICON_URL = var.agent_icon_url } : {},
     var.agent_id != 0 ? { AGENT_ID = tostring(var.agent_id) } : {},
+    var.cdp_api_key_id != "" ? { CDP_API_KEY_ID = var.cdp_api_key_id } : {},
+    var.cdp_api_key_secret != "" ? { CDP_API_KEY_SECRET = var.cdp_api_key_secret } : {},
   )
 }
 
