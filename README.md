@@ -1,204 +1,182 @@
-# A2A x402 Agent Template
+# Agent Trust Gateway
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js 22+](https://img.shields.io/badge/node-22%2B-brightgreen.svg)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/tests-vitest-yellow.svg)](https://vitest.dev)
+Trust scoring, identity profiles, and validation for on-chain registered agents ([ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)). Pays-per-query via [x402](https://www.x402.org) (HTTP 402 protocol) with USDC on Base.
 
-A production-ready template for building **AI agents that accept on-chain payments**. Combines [Hono](https://hono.dev) (web framework), [x402](https://www.x402.org) (HTTP 402 payment protocol), [A2A](https://google.github.io/A2A/) (Agent-to-Agent protocol), and [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) (on-chain agent identity) into a serverless agent that deploys to AWS Lambda in one command.
+Built with [Hono](https://hono.dev), [A2A](https://google.github.io/A2A/) (Agent-to-Agent protocol), and [`agent0-sdk`](https://sdk.ag0.xyz/docs) for on-chain registration. Deployed as an AWS Lambda function.
 
-Pre-configured for **Base Sepolia** (testnet) — switch to Base Mainnet by changing two env vars (see [Network Switching](#network-switching)). Designed to be consumed by AI agents: ships with [`AGENT.md`](AGENT.md) so tools like [OpenClaw](https://openclaw.ai) can index and interact with this repo out of the box.
+## Live Instance
 
-## Architecture Overview
+| | |
+|---|---|
+| **URL** | `https://agent-trust-gateway.port402.com` |
+| **Agent ID** | [#21557 on 8004scan](https://www.8004scan.io/agents/base/21557) |
+| **Network** | Base mainnet (`eip155:8453`) |
+| **Payment** | USDC via x402 (paid endpoints return `402` without payment) |
 
-```mermaid
-flowchart LR
-    Client -->|HTTPS| FnURL["Lambda Function URL"]
+## Endpoints
 
-    subgraph AWS["AWS (Terraform-managed)"]
-        FnURL --> Lambda["Lambda<br/>(arm64, Docker)"]
-        Lambda --> SM["Secrets Manager<br/>(private key)"]
-        Lambda -.-> CW["CloudWatch Logs"]
-        ECR["ECR"] -.->|image source| Lambda
-    end
+| Method | Path | Price | Description |
+|--------|------|-------|-------------|
+| `GET` | `/health` | Free | Health check |
+| `GET` | `/api/health` | Free | API health check |
+| `GET` | `/.well-known/agent-card.json` | Free | A2A agent card + entrypoints |
+| `GET` | `/.well-known/agent-registration.json` | Free | On-chain identity link |
+| `GET` | `/api/agent/:id/profile` | $0.001 | Agent identity and registration metadata |
+| `POST` | `/api/agent/profile/invoke` | $0.001 | Same as above (A2A invoke envelope) |
+| `POST` | `/api/agent/score/invoke` | $0.01 | Trust score from reputation data |
+| `POST` | `/api/agent/validate/invoke` | $0.03 | Deep validation of endpoints + attestations |
+| `POST` | `/a2a` | $0.01 | A2A task execution (`message/send`) |
 
-    subgraph Hono["Hono App"]
-        Free["/health<br/>/.well-known/agent-card.json"]
-        Paid["/api/* &ensp; /a2a"]
-    end
+## API Reference
 
-    Lambda --> Hono
-
-    Paid -->|verify payment| Facilitator["x402 Facilitator"]
-    Facilitator -->|settle| Blockchain["Base (USDC)"]
-```
-
-Terraform manages all AWS infrastructure: Lambda function, ECR image repository, Secrets Manager (private key), IAM roles, CloudWatch log group, and the Function URL endpoint. Endpoints split into **free** (`/health`, agent card, read-only A2A methods) and **paid** (`/api/*`, A2A `message/send` and `message/stream`) — see [How Payments Work](#how-payments-work) for the full x402 sequence.
-
-## What's Inside
-
-| Library | Package | What it does |
-|---------|---------|-------------|
-| **[Hono](https://hono.dev)** | `hono` | Ultrafast web framework. Runs on Node.js, AWS Lambda, Deno, Bun, Cloudflare Workers — same code everywhere. |
-| **[x402](https://www.x402.org)** | `@x402/hono` `@x402/core` `@x402/evm` | HTTP 402 payment protocol. Clients pay with on-chain USDC, a facilitator verifies payment, your agent gets paid. |
-| **[A2A](https://google.github.io/A2A/)** | `@a2a-js/sdk` | Google's Agent-to-Agent protocol. Standardized JSON-RPC interface so agents can discover and talk to each other. |
-| **[ERC-8004](https://eips.ethereum.org/EIPS/eip-8004)** | `agent0-sdk` | On-chain agent identity. Mints an NFT with IPFS metadata pointing to your agent's live endpoint. |
-
-## Prerequisites
-
-- **Node.js 22+** and npm
-- **AWS CLI** configured (`aws configure`)
-- **Terraform** (for Lambda deployment)
-- **Docker** (for building the Lambda container image)
-- **Pinata account** (free tier works — needed only for ERC-8004 identity registration)
-
-## Quick Start
-
-### 1. Clone and install
+### Health Check
 
 ```bash
-git clone https://github.com/wgopar/a2a-x402-agent-template.git
-cd a2a-x402-agent-template
-npm install
+curl https://agent-trust-gateway.port402.com/api/health
 ```
 
-### 2. Create a wallet
+```json
+{ "ok": true, "service": "agent-trust-gateway" }
+```
+
+### Agent Profile — `GET /api/agent/:id/profile`
+
+Returns agent identity, registration metadata, endpoints, and wallet info. Supports multi-chain via `?chain=` query param (`base`, `base-sepolia`, `ethereum`, `sepolia`).
 
 ```bash
-npm run create-wallet -- my-agent
+curl https://agent-trust-gateway.port402.com/api/agent/42/profile?chain=base
 ```
 
-This generates a new Ethereum wallet and writes the address + private key to both `.env` (local dev) and `infra/terraform.tfvars` (Lambda deploy). It also sets `function_name` in tfvars, which names all AWS resources (Lambda, ECR, IAM roles). **Use a unique name per agent** to prevent resource collisions. Both files are gitignored.
+```json
+{
+  "agentId": "42",
+  "chain": "base",
+  "owner": "0x1234...abcd",
+  "wallet": "0x1234...abcd",
+  "name": "Example Agent",
+  "description": "An ERC-8004 registered agent",
+  "image": "ipfs://Qm...",
+  "endpoints": [
+    { "name": "A2A", "endpoint": "https://example.com/a2a" }
+  ],
+  "supportedTrust": ["reputation"],
+  "active": true,
+  "registrations": [
+    { "agentId": 42, "agentRegistry": "eip155:8453:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" }
+  ]
+}
+```
 
-> **Next:** Fund the wallet with testnet ETH from a [Base Sepolia faucet](https://www.coinbase.com/faucets/base-ethereum-goerli-faucet).
+### Trust Score — `POST /api/agent/score/invoke`
 
-### 3. Configure environment
-
-The wallet script pre-fills most values. Review `.env` and adjust if needed:
+Computes a trust score (0-100) from on-chain reputation data. The score combines feedback ratings, identity maturity (endpoint and trust method declarations), and reputation confidence (feedback volume and consistency).
 
 ```bash
-# .env (auto-generated, gitignored)
-WALLET_ADDRESS=0x...          # from create-wallet
-PRIVATE_KEY=0x...             # from create-wallet
-NETWORK=eip155:84532          # Base Sepolia (testnet)
-RPC_URL=https://sepolia.base.org
-FACILITATOR_URL=https://www.x402.org/facilitator
-AGENT_NAME=Hello Agent
-AGENT_URL=http://localhost:3000
-PORT=3000
+curl -X POST https://agent-trust-gateway.port402.com/api/agent/score/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"agentId": "42", "chain": "base"}}'
 ```
 
-See [Configuration Reference](#configuration-reference) for all available variables.
+```json
+{
+  "output": {
+    "agentId": "42",
+    "chain": "base",
+    "trustScore": 68,
+    "verdict": "trusted",
+    "breakdown": {
+      "feedbackScore": 50,
+      "identityMaturity": 50,
+      "reputationConfidence": 12,
+      "formula": "score = feedbackAvg + (identityMaturity * 0.3) + (reputationConfidence * 0.2)"
+    },
+    "feedbackSummary": {
+      "count": 4,
+      "averageScore": 72.5,
+      "uniqueClients": 3
+    },
+    "agentName": "Example Agent"
+  }
+}
+```
 
-### 4. Run locally
+**Verdicts**: `highly-trusted` (80+), `trusted` (60-79), `neutral` (40-59), `low-trust` (20-39), `untrusted` (<20).
+
+### Validate Agent — `POST /api/agent/validate/invoke`
+
+Probes agent endpoints for reachability, verifies wallet format, and checks declared attestations. Configurable via `checks` array: `endpoints`, `wallet`, `attestations`.
 
 ```bash
-npm run dev
+curl -X POST https://agent-trust-gateway.port402.com/api/agent/validate/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"agentId": "42", "checks": ["endpoints", "wallet"]}}'
 ```
 
-### 5. Test endpoints
+```json
+{
+  "output": {
+    "agentId": "42",
+    "chain": "base",
+    "agentName": "Example Agent",
+    "endpointStatus": [
+      { "name": "A2A", "endpoint": "https://example.com/a2a", "status": "reachable", "latencyMs": 245 }
+    ],
+    "walletStatus": { "address": "0x1234...abcd", "valid": true, "isOwner": true },
+    "attestations": [],
+    "overallVerdict": "validated",
+    "issues": []
+  }
+}
+```
+
+**Verdicts**: `validated`, `validated-with-warnings`, `partial`, `failed`.
+
+### A2A Protocol — `POST /a2a`
+
+JSON-RPC interface following the [A2A spec](https://google.github.io/A2A/). Read-only methods (`tasks/get`, `tasks/cancel`) are free; work-producing methods (`message/send`, `message/stream`) cost $0.01.
 
 ```bash
-# Health check (always free)
-curl http://localhost:3000/health
-
-# Agent card (always free)
-curl http://localhost:3000/.well-known/agent-card.json
-
-# Paid endpoint — returns 402 with payment terms
-curl -i http://localhost:3000/api/hello
+curl -X POST https://agent-trust-gateway.port402.com/a2a \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "kind": "message",
+        "messageId": "msg-1",
+        "role": "user",
+        "parts": [{ "kind": "text", "text": "Get trust score for agent 42" }]
+      }
+    }
+  }'
 ```
 
-The `/api/hello` response includes a `402 Payment Required` status with an `x-payment-required` header containing the payment terms (price, network, asset, payTo address).
+The executor parses natural language — it understands intents like "profile", "trust score", "validate" combined with an agent ID.
 
-## Deploy to AWS Lambda
+### Agent Discovery
 
-### First-time setup
-
-Make sure you've run `npm run create-wallet -- <name>` first — it sets `function_name` in `terraform.tfvars`, which is **required** and names all AWS resources.
-
-```bash
-cd infra && terraform init
-terraform apply -target=aws_ecr_repository.agent   # create ECR repo
-cd ..
+**Agent Card** — A2A-compatible card with structured entrypoints and JSON Schemas:
+```
+GET /.well-known/agent-card.json
 ```
 
-### Deploy
-
-```bash
-npm run deploy
+**Agent Registration** — links the live endpoint to its on-chain ERC-8004 token:
 ```
-
-This builds a Docker image, pushes to ECR, and runs `terraform apply` — your agent is live. Terraform stores your private key in **AWS Secrets Manager** (not as a Lambda environment variable), so it's encrypted at rest and accessed via IAM at runtime.
-
-```mermaid
-flowchart LR
-    Build["docker build<br/>(esbuild bundle)"] --> Push["docker push<br/>(ECR)"]
-    Push --> Apply["terraform apply<br/>(Lambda + IAM + Secrets)"]
-    Apply --> Live["Function URL<br/>(public HTTPS)"]
-```
-
-### Verify
-
-```bash
-# Get your Function URL from terraform output
-cd infra && terraform output function_url
-
-# Test it
-curl https://<your-function-url>/health
-curl https://<your-function-url>/.well-known/agent-card.json
-```
-
-## Register On-Chain Identity (Optional)
-
-ERC-8004 registration mints an NFT that points to your agent's live endpoint via IPFS metadata. This enables on-chain agent discovery.
-
-### 1. Get a Pinata JWT
-
-Sign up at [pinata.cloud](https://www.pinata.cloud), create an API key, and add the JWT to `.env`:
-
-```bash
-PINATA_JWT=your-pinata-jwt
-```
-
-### 2. Set your agent URL
-
-Point `AGENT_URL` in `.env` to your deployed Lambda Function URL (not localhost):
-
-```bash
-AGENT_URL=https://<your-function-url>
-```
-
-### 3. Register
-
-```bash
-npm run register
-```
-
-```mermaid
-flowchart LR
-    Meta["Build metadata<br/>(name, skills, endpoint)"] --> IPFS["Upload to IPFS<br/>(via Pinata)"]
-    IPFS --> Mint["Mint ERC-8004 NFT<br/>(on-chain)"]
-    Mint --> URI["Set token URI<br/>(ipfs://...)"]
-```
-
-### 4. Verify
-
-Anyone can now discover your agent on-chain:
-
-```
-tokenURI(tokenId) → ipfs://... → metadata JSON → services[0].endpoint → your agent
+GET /.well-known/agent-registration.json
 ```
 
 ## How Payments Work
 
-The x402 protocol uses **gasless payments**. Clients never submit blockchain transactions — they sign an off-chain [EIP-3009](https://eips.ethereum.org/EIPS/eip-3009) `transferWithAuthorization`, and the facilitator settles on-chain on their behalf.
+All paid endpoints use [x402](https://www.x402.org) — the HTTP 402 payment protocol. Clients sign a gasless [EIP-3009](https://eips.ethereum.org/EIPS/eip-3009) authorization off-chain, and the [CDP facilitator](https://docs.cdp.coinbase.com/) settles USDC on Base mainnet.
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant Agent
-    participant Facilitator
-    participant Blockchain
+    participant Facilitator as CDP Facilitator
+    participant Blockchain as Base (USDC)
 
     Client->>Agent: Request (no payment)
     Agent-->>Client: 402 + payment terms
@@ -213,144 +191,177 @@ sequenceDiagram
     Agent-->>Client: Response + tx hash
 ```
 
-| Endpoint | Payment |
-|----------|---------|
-| `GET /health` | Free |
-| `GET /.well-known/agent-card.json` | Free |
-| `POST /a2a` — `tasks/get`, `tasks/cancel` | Free |
-| `POST /a2a` — `message/send`, `message/stream` | **$0.01 USDC** |
-| `GET /api/hello` | **$0.01 USDC** |
+The `402` response includes an `x-payment-required` header with the payment terms (price, network, asset, payTo address). x402-compatible clients handle this automatically.
 
-Read-only A2A methods are always free. Only work-producing methods (`message/send`, `message/stream`) require payment.
+## Quick Start
 
-## Customize Your Agent
+### 1. Clone and install
 
-Three files to edit:
-
-### `src/agent/skills.ts` — Define skills
-
-```typescript
-export const skills: AgentSkill[] = [
-  {
-    id: "my-skill",
-    name: "My Skill",
-    description: "What this skill does",
-    tags: ["tag1", "tag2"],
-    examples: ["Do the thing", "Another example"],
-  },
-];
+```bash
+git clone https://github.com/port402/agent-trust-gateway.git
+cd agent-trust-gateway
+npm install
 ```
 
-### `src/agent/executor.ts` — Implement logic
+### 2. Configure environment
 
-```typescript
-export class MyExecutor implements AgentExecutor {
-  async execute(
-    requestContext: RequestContext,
-    eventBus: ExecutionEventBus,
-  ): Promise<void> {
-    // Your agent logic here
-    const response: Message = {
-      kind: "message",
-      messageId: uuidv4(),
-      role: "agent",
-      parts: [{ kind: "text", text: "Your response" }],
-      contextId: requestContext.contextId,
-    };
-    eventBus.publish(response);
-    eventBus.finished();
-  }
-}
+```bash
+cp .env.example .env
+# Edit .env — set WALLET_ADDRESS and PRIVATE_KEY at minimum
 ```
 
-### `src/routes/api.ts` — Add HTTP endpoints
+### 3. Run locally
 
-```typescript
-api.get("/my-endpoint", (c) => {
-  return c.json({ data: "your response" });
-});
+```bash
+BYPASS_PAYMENTS=true bun run src/server.ts
 ```
 
-New routes under `/api/*` are automatically payment-gated. Update the price in `src/app.ts` if needed.
+### 4. Test it
 
-## Project Structure
+```bash
+# Health check
+curl http://localhost:3000/health
 
-```
-├── src/
-│   ├── app.ts              # Composition root — middleware chain + routes
-│   ├── config.ts           # Environment config (async for Secrets Manager)
-│   ├── server.ts           # Node.js entrypoint (local dev)
-│   ├── lambda.ts           # AWS Lambda entrypoint (lazy init)
-│   ├── agent/
-│   │   ├── card.ts         # AgentCard builder
-│   │   ├── executor.ts     # ★ Task execution logic (customize this)
-│   │   └── skills.ts       # ★ Skill definitions (customize this)
-│   ├── a2a/
-│   │   └── handler.ts      # A2A JSON-RPC handler + agent card endpoint
-│   ├── payments/
-│   │   └── x402.ts         # x402 payment middleware factory
-│   ├── routes/
-│   │   ├── api.ts          # ★ Paid HTTP routes (customize this)
-│   │   └── health.ts       # Health check
-│   └── identity/
-│       └── erc8004.ts      # ERC-8004 registration (agent0-sdk)
-├── scripts/
-│   ├── create-wallet.ts    # Generate wallet + set function_name → .env + terraform.tfvars
-│   ├── register-identity.ts# Register on-chain identity
-│   └── deploy.sh           # Build + push + terraform apply
-├── infra/
-│   ├── main.tf             # Lambda, ECR, IAM, Secrets Manager
-│   ├── variables.tf        # Terraform variable definitions
-│   ├── outputs.tf          # Terraform outputs (function URL, etc.)
-│   └── terraform.tfvars.example
-├── test/                   # Vitest tests
-├── .env.example            # Environment template
-├── Dockerfile              # Multi-stage (lambda default, server for ECS)
-└── tsconfig.json
+# Agent card
+curl http://localhost:3000/.well-known/agent-card.json
+
+# Profile (payments bypassed)
+curl http://localhost:3000/api/agent/42/profile
 ```
 
-Files marked with **★** are the ones you customize.
-
-## Configuration Reference
+## Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `WALLET_ADDRESS` | Yes | — | Ethereum wallet address |
-| `PRIVATE_KEY` | Yes (local dev) | — | Private key for signing. Not needed on Lambda if `PRIVATE_KEY_SECRET_ARN` is set. |
-| `PRIVATE_KEY_SECRET_ARN` | Yes (Lambda) | — | AWS Secrets Manager ARN. Lambda uses this instead of `PRIVATE_KEY`. |
-| `NETWORK` | No | `eip155:84532` | Chain identifier (Base Sepolia) |
-| `RPC_URL` | No | `https://sepolia.base.org` | JSON-RPC endpoint |
-| `FACILITATOR_URL` | No | `https://www.x402.org/facilitator` | x402 facilitator URL (testnet) |
-| `AGENT_NAME` | No | `Hello Agent` | Agent display name (shown in agent card) |
-| `AGENT_DESCRIPTION` | No | `A simple Hello World agent` | Agent description (shown in agent card) |
-| `AGENT_URL` | No | `http://localhost:3000` | Public URL. Set to Function URL when deploying to Lambda. |
+| `WALLET_ADDRESS` | Yes | — | Ethereum wallet address (receives payments) |
+| `PRIVATE_KEY` | Yes (local) | — | Private key for signing. On Lambda, use `PRIVATE_KEY_SECRET_ARN` instead. |
+| `PRIVATE_KEY_SECRET_ARN` | Yes (Lambda) | — | AWS Secrets Manager ARN for the private key |
+| `NETWORK` | No | `eip155:84532` | Chain identifier (`eip155:8453` for Base mainnet) |
+| `RPC_URL` | No | `https://sepolia.base.org` | Primary JSON-RPC endpoint |
+| `BASE_RPC_URL` | No | `https://mainnet.base.org` | Base mainnet RPC (for multi-chain queries) |
+| `BASE_SEPOLIA_RPC_URL` | No | `https://sepolia.base.org` | Base Sepolia RPC |
+| `ETH_RPC_URL` | No | `https://eth.llamarpc.com` | Ethereum mainnet RPC |
+| `SEPOLIA_RPC_URL` | No | `https://rpc.sepolia.org` | Sepolia testnet RPC |
+| `CDP_API_KEY_ID` | For payments | — | Coinbase Developer Platform API key ID |
+| `CDP_API_KEY_SECRET` | For payments | — | CDP API key secret (PEM or Ed25519) |
+| `BYPASS_PAYMENTS` | No | `false` | Skip payment verification (blocked in production) |
+| `AGENT_NAME` | No | `Hello Agent` | Agent display name |
+| `AGENT_DESCRIPTION` | No | `A simple Hello World agent` | Agent description |
+| `AGENT_URL` | No | `https://agent-trust-gateway.port402.com` | Public URL for agent card and registration |
+| `AGENT_ID` | No | — | ERC-8004 token ID (for `/.well-known/agent-registration.json`) |
 | `PORT` | No | `3000` | Local dev server port |
-| `PINATA_JWT` | For registration | — | Pinata API JWT. Required only for `npm run register` (ERC-8004). |
-| `AGENT_PROVIDER_NAME` | No | — | Provider org name. Requires `AGENT_PROVIDER_URL` to also be set. |
-| `AGENT_PROVIDER_URL` | No | — | Provider org URL |
+| `PINATA_JWT` | For registration | — | Pinata API JWT (IPFS uploads for ERC-8004 registration) |
+| `AGENT_PROVIDER_NAME` | No | — | Provider organization name |
+| `AGENT_PROVIDER_URL` | No | — | Provider organization URL |
 | `AGENT_DOCS_URL` | No | — | Documentation URL (shown in agent card) |
 | `AGENT_ICON_URL` | No | — | Icon URL (shown in agent card) |
-
-## Network Switching
-
-The same wallet works on both testnet and mainnet. Switch by editing `.env` and `infra/terraform.tfvars`:
-
-| | Base Sepolia (testnet) | Base Mainnet |
-|---|---|---|
-| `NETWORK` | `eip155:84532` | `eip155:8453` |
-| `RPC_URL` | `https://sepolia.base.org` | `https://mainnet.base.org` |
-| `FACILITATOR_URL` | `https://www.x402.org/facilitator` | `https://api.cdp.coinbase.com/platform/v2/x402` |
-
-After switching, redeploy (`npm run deploy`) and re-register identity (`npm run register`) on the new network.
 
 ## Testing
 
 ```bash
-npm test        # Run all tests
-npm run lint    # TypeScript type check
+bun test
 ```
 
-Tests cover the app composition, agent card generation, executor behavior, config loading, and Lambda handler setup.
+Tests cover app composition, agent card generation, executor behavior, config loading, and Lambda handler setup. Two payment integration tests are skipped (require live CDP facilitator + Base mainnet).
+
+## Deployment
+
+The deploy script builds a Docker image (esbuild bundle into AWS Lambda base image), pushes to ECR, and runs Terraform.
+
+```bash
+bash scripts/deploy.sh [tag]
+```
+
+```mermaid
+flowchart LR
+    Build["docker build<br/>(esbuild bundle)"] --> Push["docker push<br/>(ECR)"]
+    Push --> Apply["terraform apply<br/>(Lambda + IAM + Secrets)"]
+    Apply --> Live["Function URL<br/>(public HTTPS)"]
+```
+
+### First-time setup
+
+```bash
+cd infra && terraform init
+terraform apply -target=aws_ecr_repository.agent
+cd ..
+```
+
+### Infrastructure
+
+Terraform manages: Lambda function (arm64, Docker, 512 MB), ECR repository, Secrets Manager (private key), IAM roles, CloudWatch log group (14-day retention), and the Function URL.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Client -->|HTTPS| FnURL["Lambda Function URL"]
+
+    subgraph AWS["AWS (Terraform-managed)"]
+        FnURL --> Lambda["Lambda<br/>(arm64, Docker)"]
+        Lambda --> SM["Secrets Manager<br/>(private key)"]
+        Lambda -.-> CW["CloudWatch Logs"]
+        ECR["ECR"] -.->|image source| Lambda
+    end
+
+    subgraph Hono["Hono App"]
+        Free["/health<br/>/.well-known/*"]
+        Paid["/api/* &ensp; /a2a"]
+    end
+
+    Lambda --> Hono
+
+    Paid -->|verify payment| CDP["CDP Facilitator"]
+    CDP -->|settle| Blockchain["Base (USDC)"]
+    Hono -->|read| Registry["ERC-8004<br/>Identity + Reputation<br/>Registries"]
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/app.ts` | App factory — middleware chain, payment gating, route mounting |
+| `src/config.ts` | Environment config loader with validation |
+| `src/server.ts` | Local dev server entrypoint |
+| `src/lambda.ts` | AWS Lambda handler (lazy init, warm start caching) |
+| `src/routes/api.ts` | REST API routes (profile, trust-score, validate) + caching |
+| `src/agent/executor.ts` | A2A agent executor (natural language → trust queries) |
+| `src/agent/card.ts` | A2A agent card builder |
+| `src/agent/skills.ts` | Skill definitions (profile, trust-score, validate) |
+| `src/agent/entrypoints.ts` | Structured entrypoint definitions with JSON Schemas |
+| `src/a2a/handler.ts` | A2A JSON-RPC handler + discovery endpoints |
+| `src/payments/x402.ts` | x402 payment middleware (CDP facilitator) |
+| `src/identity/erc8004.ts` | Agent registration (mint/update via agent0-sdk) |
+| `infra/main.tf` | Terraform: Lambda, ECR, IAM, Secrets Manager |
+| `scripts/deploy.sh` | Build + push + terraform apply |
+| `scripts/register-identity.ts` | Register or update on-chain agent identity |
+
+## On-Chain Registration (ERC-8004)
+
+Agents are registered as ERC-721 tokens on Base mainnet. The registration script auto-detects whether to mint a new token or update an existing one.
+
+### Register or update
+
+```bash
+# Auto-detect: mints new if none found, updates if existing
+bun run scripts/register-identity.ts
+
+# Force update a specific agent
+AGENT_ID=42 bun run scripts/register-identity.ts
+```
+
+The script:
+1. Checks for an existing agent owned by `WALLET_ADDRESS` (via subgraph)
+2. Builds metadata (name, description, endpoints, skills, trust declarations)
+3. Uploads to IPFS via Pinata (requires `PINATA_JWT`)
+4. Mints or updates the ERC-8004 token on-chain
+
+### Contracts
+
+| Contract | Address | Network |
+|----------|---------|---------|
+| Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` | Base mainnet |
+| Reputation Registry | `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` | Base mainnet |
 
 ## License
 
