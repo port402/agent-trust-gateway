@@ -79,10 +79,18 @@ async function applyAgentMetadata(
   agent.addDomain("technology/security/identity_management", true);
   agent.addDomain("technology/blockchain/smart_contracts", true);
 
+  // Custom service entries (no SDK method — push directly to endpoints)
+  const endpoints = (agent as any).registrationFile.endpoints;
+  endpoints.push(
+    { type: "web", value: config.agentUrl },
+    { type: "API", value: config.agentUrl + "/api", meta: { version: "1.0.0" } },
+    { type: "docs", value: "https://github.com/port402/agent-trust-gateway" },
+  );
+
   let imageCID: string | undefined;
   if (opts?.imagePath && config.pinataJwt) {
     imageCID = await uploadImageToPinata(opts.imagePath, config.pinataJwt);
-    agent.updateInfo(undefined, undefined, `ipfs://${imageCID}`);
+    agent.updateInfo(undefined, undefined, `https://gateway.pinata.cloud/ipfs/${imageCID}`);
   }
   return imageCID;
 }
