@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { createPublicClient, http, fallback, type Address, type Chain } from "viem";
+import { createPublicClient, http, fallback, type Address, type Chain, type PublicClient } from "viem";
 import { base, baseSepolia, mainnet, sepolia } from "viem/chains";
 import { IdentityClient, ReputationClient, ViemAdapter } from "erc-8004-js";
 
@@ -198,7 +198,7 @@ async function fetchRegistrationFileUncached(identity: IdentityClient, agentId: 
 }
 
 // Reuse a single client per chain to avoid creating new connections on every request.
-const clientCache = new Map<string, { identity: IdentityClient; reputation: ReputationClient; chainId: number }>();
+const clientCache = new Map<string, { publicClient: PublicClient; identity: IdentityClient; reputation: ReputationClient; reputationRegistry: Address; chainId: number }>();
 
 function createClients(chainName: string = DEFAULT_CHAIN) {
   const cached = clientCache.get(chainName);
@@ -217,8 +217,10 @@ function createClients(chainName: string = DEFAULT_CHAIN) {
   const adapter = new ViemAdapter(publicClient as any);
 
   const clients = {
+    publicClient: publicClient as PublicClient,
     identity: new IdentityClient(adapter, config.identityRegistry),
     reputation: new ReputationClient(adapter, config.reputationRegistry, config.identityRegistry),
+    reputationRegistry: config.reputationRegistry,
     chainId: config.chain.id,
   };
 
@@ -413,14 +415,14 @@ api.post("/agent/score/invoke", async (c) => {
   const { agentId, chain } = parsed.data;
   
   try {
-    const { identity, reputation } = createClients(chain);
-    
+    const { publicClient, identity, reputationRegistry } = createClients(chain);
+
     // Get basic profile info
     const registrationFile = await fetchRegistrationFile(identity, agentId, chain);
 
     // Get all feedback and compute summary locally.
     // Some registry deployments revert on getSummary when clientAddresses is empty.
-    const allFeedback = await readFeedbackSafe(reputation, agentId);
+    const allFeedback = await readFeedbackSafe(publicClient, reputationRegistry, agentId);
 
     const feedbackCount = allFeedback.scores.length;
     const avgScore =
@@ -501,8 +503,8 @@ api.post("/agent/validate/invoke", async (c) => {
   const { agentId, chain, checks } = parsed.data;
   
   try {
-    const { identity, reputation } = createClients(chain);
-    
+    const { publicClient, identity, reputationRegistry } = createClients(chain);
+
     // Get profile
     const registrationFile = await fetchRegistrationFile(identity, agentId, chain);
     const owner = await identity.getOwner(agentId);
@@ -592,7 +594,7 @@ api.post("/agent/validate/invoke", async (c) => {
     if (checks.includes("attestations") && registrationFile.supportedTrust) {
       for (const trustType of registrationFile.supportedTrust) {
         if (trustType === "reputation") {
-          const feedback = await readFeedbackSafe(reputation, agentId);
+          const feedback = await readFeedbackSafe(publicClient, reputationRegistry, agentId);
           const count = feedback.scores.length;
           const average = count > 0 ? feedback.scores.reduce((sum, s) => sum + s, 0) / count : 0;
           validationReport.attestations.push({
@@ -652,15 +654,47 @@ api.post("/agent/validate/invoke", async (c) => {
   }
 });
 
+// The on-chain readAllFeedback returns 7 arrays, but erc-8004-js declares only 5,
+// causing a decoding error ("Bytes value is not a valid boolean"). We call viem directly
+// with the correct ABI to get accurate feedback data.
+const READ_ALL_FEEDBACK_ABI = [{
+  name: "readAllFeedback",
+  type: "function",
+  stateMutability: "view",
+  inputs: [
+    { name: "agentId", type: "uint256" },
+    { name: "clientAddresses", type: "address[]" },
+    { name: "tag1", type: "string" },
+    { name: "tag2", type: "string" },
+    { name: "includeRevoked", type: "bool" },
+  ],
+  outputs: [
+    { name: "clients", type: "address[]" },
+    { name: "feedbackTypes", type: "uint256[]" },
+    { name: "scores", type: "uint256[]" },
+    { name: "timestamps", type: "uint256[]" },
+    { name: "tag1s", type: "string[]" },
+    { name: "tag2s", type: "string[]" },
+    { name: "revoked", type: "bool[]" },
+  ],
+}] as const;
+
 async function readFeedbackSafe(
-  reputation: ReputationClient,
+  publicClient: PublicClient,
+  reputationRegistry: Address,
   agentId: bigint,
 ): Promise<{ scores: number[]; clientAddresses: string[]; warning?: string }> {
   try {
-    const feedback = await reputation.readAllFeedback(agentId);
+    const result = await publicClient.readContract({
+      address: reputationRegistry,
+      abi: READ_ALL_FEEDBACK_ABI,
+      functionName: "readAllFeedback",
+      args: [agentId, [], "", "", false],
+    });
+    const [clients, , scores] = result;
     return {
-      scores: Array.isArray(feedback.scores) ? feedback.scores : [],
-      clientAddresses: Array.isArray(feedback.clientAddresses) ? feedback.clientAddresses : [],
+      scores: scores.map(Number),
+      clientAddresses: clients as string[],
     };
   } catch (error) {
     const warning = error instanceof Error ? error.message : "Failed to read feedback";

@@ -5,28 +5,52 @@ import type {
   RequestContext,
   ExecutionEventBus,
 } from "@a2a-js/sdk/server";
-import { createPublicClient, http, type Address } from "viem";
+import { createPublicClient, http, type Address, type PublicClient } from "viem";
 import { base } from "viem/chains";
-import { IdentityClient, ReputationClient, ViemAdapter } from "erc-8004-js";
+import { IdentityClient, ViemAdapter } from "erc-8004-js";
 
 // ERC-8004 Contract Addresses
 const IDENTITY_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" as Address;
 const REPUTATION_REGISTRY = "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63" as Address;
 
+// The on-chain readAllFeedback returns 7 arrays, but erc-8004-js declares only 5,
+// causing a decoding error. We call viem directly with the correct ABI.
+const READ_ALL_FEEDBACK_ABI = [{
+  name: "readAllFeedback",
+  type: "function",
+  stateMutability: "view",
+  inputs: [
+    { name: "agentId", type: "uint256" },
+    { name: "clientAddresses", type: "address[]" },
+    { name: "tag1", type: "string" },
+    { name: "tag2", type: "string" },
+    { name: "includeRevoked", type: "bool" },
+  ],
+  outputs: [
+    { name: "clients", type: "address[]" },
+    { name: "feedbackTypes", type: "uint256[]" },
+    { name: "scores", type: "uint256[]" },
+    { name: "timestamps", type: "uint256[]" },
+    { name: "tag1s", type: "string[]" },
+    { name: "tag2s", type: "string[]" },
+    { name: "revoked", type: "bool[]" },
+  ],
+}] as const;
+
 // Agent Trust Gateway executor for A2A protocol
 export class TrustGatewayExecutor implements AgentExecutor {
+  private publicClient: PublicClient;
   private identityClient: IdentityClient;
-  private reputationClient: ReputationClient;
 
   constructor() {
     const publicClient = createPublicClient({
       chain: base,
       transport: http(process.env.BASE_RPC_URL || "https://mainnet.base.org"),
     });
+    this.publicClient = publicClient as PublicClient;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const adapter = new ViemAdapter(publicClient as any);
     this.identityClient = new IdentityClient(adapter, IDENTITY_REGISTRY);
-    this.reputationClient = new ReputationClient(adapter, REPUTATION_REGISTRY, IDENTITY_REGISTRY);
   }
 
   async execute(
@@ -111,10 +135,14 @@ export class TrustGatewayExecutor implements AgentExecutor {
     agentId: bigint,
   ): Promise<{ scores: number[]; warning?: string }> {
     try {
-      const feedback = await this.reputationClient.readAllFeedback(agentId);
-      return {
-        scores: Array.isArray(feedback.scores) ? feedback.scores : [],
-      };
+      const result = await this.publicClient.readContract({
+        address: REPUTATION_REGISTRY,
+        abi: READ_ALL_FEEDBACK_ABI,
+        functionName: "readAllFeedback",
+        args: [agentId, [], "", "", false],
+      });
+      const [, , scores] = result;
+      return { scores: scores.map(Number) };
     } catch (error) {
       const warning = error instanceof Error ? error.message : "Failed to read feedback";
       return { scores: [], warning };
